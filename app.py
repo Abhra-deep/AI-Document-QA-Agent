@@ -3,9 +3,9 @@ from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains import create_retrieval_chain
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 import google.generativeai as genai
 import os
 
@@ -37,22 +37,36 @@ def answer_question(question, api_key):
         google_api_key=api_key
     )
     db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key, temperature=0.3)
+    retriever = db.as_retriever(search_kwargs={"k": 4})
+
+    model = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        google_api_key=api_key,
+        temperature=0.3
+    )
+
     prompt = ChatPromptTemplate.from_template("""
 Answer the question from the provided context only.
 If the answer is not in the context, say "The answer is not available in the uploaded document."
 Do not make up answers.
 
 Context: {context}
-Question: {input}
+Question: {question}
 Answer:""")
-    retriever = db.as_retriever(search_kwargs={"k": 4})
-    document_chain = create_stuff_documents_chain(model, prompt)
-    retrieval_chain = create_retrieval_chain(retriever, document_chain)
-    response = retrieval_chain.invoke({"input": question})
-    return response["answer"]
 
-# UI
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | model
+        | StrOutputParser()
+    )
+
+    return chain.invoke(question)
+
+# ── UI ────────────────────────────────────────────────────────────────────────
 st.title("🤖 AI-Powered Document Q&A Agent")
 st.markdown("Upload PDFs and ask questions — powered by **Google Gemini + RAG**.")
 st.markdown("---")
@@ -81,7 +95,8 @@ with st.sidebar:
                     st.success(f"✅ {len(pdf_docs)} document(s) processed! ({len(chunks)} chunks)")
 
 st.subheader("💬 Ask a Question")
-question = st.text_input("Type your question here...", placeholder="e.g. What is the main topic of this document?")
+question = st.text_input("Type your question here...",
+                          placeholder="e.g. What is the main topic of this document?")
 
 if st.button("Get Answer", type="primary"):
     if not api_key:
@@ -100,4 +115,9 @@ if st.button("Get Answer", type="primary"):
                 st.error(f"Error: {str(e)}")
 
 st.markdown("---")
-st.markdown("<small>Built by **Abhradeep Chandra Paul** · [GitHub](https://github.com/abhra-deep) · [LinkedIn](https://linkedin.com/in/abhradeepchandrapaul)</small>", unsafe_allow_html=True)
+st.markdown(
+    "<small>Built by **Abhradeep Chandra Paul** · "
+    "[GitHub](https://github.com/abhra-deep) · "
+    "[LinkedIn](https://linkedin.com/in/abhradeepchandrapaul)</small>",
+    unsafe_allow_html=True
+)
