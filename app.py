@@ -6,7 +6,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-import google.generativeai as genai
 import os
 
 st.set_page_config(page_title="AI Document Q&A Agent", page_icon="🤖", layout="centered")
@@ -25,7 +24,7 @@ def get_text_chunks(text):
 
 def get_vector_store(chunks, api_key):
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
+        model="text-embedding-004",
         google_api_key=api_key
     )
     vector_store = FAISS.from_texts(chunks, embedding=embeddings)
@@ -33,18 +32,11 @@ def get_vector_store(chunks, api_key):
 
 def answer_question(question, api_key):
     embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
+        model="text-embedding-004",
         google_api_key=api_key
     )
     db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-    retriever = db.as_retriever(search_kwargs={"k": 4})
-
-    model = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=api_key,
-        temperature=0.3
-    )
-
+    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key, temperature=0.3)
     prompt = ChatPromptTemplate.from_template("""
 Answer the question from the provided context only.
 If the answer is not in the context, say "The answer is not available in the uploaded document."
@@ -53,6 +45,7 @@ Do not make up answers.
 Context: {context}
 Question: {question}
 Answer:""")
+    retriever = db.as_retriever(search_kwargs={"k": 4})
 
     def format_docs(docs):
         return "\n\n".join(doc.page_content for doc in docs)
@@ -63,10 +56,9 @@ Answer:""")
         | model
         | StrOutputParser()
     )
-
     return chain.invoke(question)
 
-# ── UI ────────────────────────────────────────────────────────────────────────
+# UI
 st.title("🤖 AI-Powered Document Q&A Agent")
 st.markdown("Upload PDFs and ask questions — powered by **Google Gemini + RAG**.")
 st.markdown("---")
@@ -85,7 +77,6 @@ with st.sidebar:
             st.error("Please upload at least one PDF.")
         else:
             with st.spinner("Processing documents..."):
-                genai.configure(api_key=api_key)
                 raw_text = get_pdf_text(pdf_docs)
                 if not raw_text.strip():
                     st.error("Could not extract text from the PDFs.")
