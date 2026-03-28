@@ -3,8 +3,9 @@ from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.chains.question_answering import load_qa_chain
-from langchain.prompts import PromptTemplate
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import create_retrieval_chain
 from langchain_google_genai import ChatGoogleGenerativeAI
 import google.generativeai as genai
 import os
@@ -15,11 +16,9 @@ st.set_page_config(
     layout="centered"
 )
 
-# ── Gemini setup ─────────────────────────────────────────────────────────────
 def configure_gemini(api_key):
     genai.configure(api_key=api_key)
 
-# ── Extract text from PDFs ────────────────────────────────────────────────────
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
@@ -28,12 +27,10 @@ def get_pdf_text(pdf_docs):
             text += page.extract_text() or ""
     return text
 
-# ── Split text into chunks ────────────────────────────────────────────────────
 def get_text_chunks(text):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     return splitter.split_text(text)
 
-# ── Create FAISS vector store ─────────────────────────────────────────────────
 def get_vector_store(chunks):
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -41,9 +38,19 @@ def get_vector_store(chunks):
     vector_store = FAISS.from_texts(chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
 
-# ── QA chain with Gemini ──────────────────────────────────────────────────────
-def get_qa_chain(api_key):
-    prompt_template = """
+def answer_question(question, api_key):
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+    db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+    
+    model = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        google_api_key=api_key,
+        temperature=0.3
+    )
+    
+    prompt = ChatPromptTemplate.from_template("""
     Answer the question as detailed as possible from the provided context.
     If the answer is not in the provided context, say:
     "The answer is not available in the uploaded document."
@@ -53,38 +60,22 @@ def get_qa_chain(api_key):
     {context}
 
     Question:
-    {question}
+    {input}
 
     Answer:
-    """
-    model = ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
-        google_api_key=api_key,
-        temperature=0.3
-    )
-    prompt = PromptTemplate(
-        template=prompt_template,
-        input_variables=["context", "question"]
-    )
-    return load_qa_chain(model, chain_type="stuff", prompt=prompt)
-
-# ── Answer question ───────────────────────────────────────────────────────────
-def answer_question(question, api_key):
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-    db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-    docs = db.similarity_search(question, k=4)
-    chain = get_qa_chain(api_key)
-    response = chain({"input_documents": docs, "question": question}, return_only_outputs=True)
-    return response["output_text"]
+    """)
+    
+    retriever = db.as_retriever(search_kwargs={"k": 4})
+    document_chain = create_stuff_documents_chain(model, prompt)
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    response = retrieval_chain.invoke({"input": question})
+    return response["answer"]
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.title("🤖 AI-Powered Document Q&A Agent")
 st.markdown("Upload PDFs and ask questions — powered by **Google Gemini + RAG**.")
 st.markdown("---")
 
-# Sidebar for API key and PDF upload
 with st.sidebar:
     st.header("⚙️ Setup")
     api_key = st.text_input("🔑 Enter Gemini API Key", type="password",
@@ -110,7 +101,6 @@ with st.sidebar:
                     get_vector_store(chunks)
                     st.success(f"✅ {len(pdf_docs)} document(s) processed! ({len(chunks)} chunks)")
 
-# Main — question answering
 st.subheader("💬 Ask a Question")
 question = st.text_input("Type your question here...",
                           placeholder="e.g. What is the main topic of this document?")
