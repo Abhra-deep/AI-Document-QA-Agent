@@ -1,12 +1,8 @@
 import streamlit as st
 from PyPDF2 import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
-import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
 
 st.set_page_config(page_title="AI Document Q&A Agent", page_icon="🤖", layout="centered")
 
@@ -18,49 +14,28 @@ def get_pdf_text(pdf_docs):
             text += page.extract_text() or ""
     return text
 
-def get_text_chunks(text):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    return splitter.split_text(text)
-
-def get_vector_store(chunks, api_key):
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="text-embedding-004",
-        google_api_key=api_key
+def answer_question(question, context, api_key):
+    model = ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        google_api_key=api_key,
+        temperature=0.3
     )
-    vector_store = FAISS.from_texts(chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
-
-def answer_question(question, api_key):
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="text-embedding-004",
-        google_api_key=api_key
-    )
-    db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-    model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key, temperature=0.3)
-    prompt = ChatPromptTemplate.from_template("""
-Answer the question from the provided context only.
-If the answer is not in the context, say "The answer is not available in the uploaded document."
+    prompt = f"""You are a helpful assistant. Answer the question based ONLY on the provided document context.
+If the answer is not in the document, say "The answer is not available in the uploaded document."
 Do not make up answers.
 
-Context: {context}
-Question: {question}
-Answer:""")
-    retriever = db.as_retriever(search_kwargs={"k": 4})
+DOCUMENT CONTEXT:
+{context[:50000]}
 
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+QUESTION: {question}
 
-    chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | model
-        | StrOutputParser()
-    )
-    return chain.invoke(question)
+ANSWER:"""
+    response = model.invoke([HumanMessage(content=prompt)])
+    return response.content
 
 # UI
 st.title("🤖 AI-Powered Document Q&A Agent")
-st.markdown("Upload PDFs and ask questions — powered by **Google Gemini + RAG**.")
+st.markdown("Upload PDFs and ask questions — powered by **Google Gemini**.")
 st.markdown("---")
 
 with st.sidebar:
@@ -76,14 +51,13 @@ with st.sidebar:
         elif not pdf_docs:
             st.error("Please upload at least one PDF.")
         else:
-            with st.spinner("Processing documents..."):
+            with st.spinner("Reading documents..."):
                 raw_text = get_pdf_text(pdf_docs)
                 if not raw_text.strip():
                     st.error("Could not extract text from the PDFs.")
                 else:
-                    chunks = get_text_chunks(raw_text)
-                    get_vector_store(chunks, api_key)
-                    st.success(f"✅ {len(pdf_docs)} document(s) processed! ({len(chunks)} chunks)")
+                    st.session_state['doc_text'] = raw_text
+                    st.success(f"✅ {len(pdf_docs)} document(s) processed! Ready for questions.")
 
 st.subheader("💬 Ask a Question")
 question = st.text_input("Type your question here...",
@@ -94,12 +68,12 @@ if st.button("Get Answer", type="primary"):
         st.error("Please enter your Gemini API key in the sidebar.")
     elif not question.strip():
         st.warning("Please enter a question.")
-    elif not os.path.exists("faiss_index"):
+    elif 'doc_text' not in st.session_state:
         st.warning("Please upload and process documents first.")
     else:
         with st.spinner("Thinking..."):
             try:
-                answer = answer_question(question, api_key)
+                answer = answer_question(question, st.session_state['doc_text'], api_key)
                 st.markdown("### 📝 Answer")
                 st.write(answer)
             except Exception as e:
